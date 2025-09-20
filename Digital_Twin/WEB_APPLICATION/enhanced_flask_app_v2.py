@@ -411,7 +411,7 @@ class DigitalTwinApp:
                     # Check for new alerts
                     self.check_and_send_alerts()
                     
-                    eventlet.sleep(30)  # Update every 30 seconds
+                    eventlet.sleep(5)  # Update every 5 seconds
                     
                 except Exception as e:
                     self.logger.error(f"Error in data update task: {e}")

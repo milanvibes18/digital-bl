@@ -81,3 +81,4 @@ LABEL maintainer="Digital Twin Team" \
       version="2.0" \
       description="Digital Twin System for Industrial IoT" \
       org.opencontainers.image.source="https://github.com/your-org/digital-twin"
+CMD ["gunicorn", "--bind", "0.0.0.0:5000", "--workers", "4", "WEB_APPLICATION.enhanced_flask_app_v2:app"]

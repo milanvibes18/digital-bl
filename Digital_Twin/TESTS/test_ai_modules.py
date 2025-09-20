@@ -1,23 +1,15 @@
 """Test AI modules functionality"""
-
 import pytest
 import pandas as pd
 import numpy as np
 
-def test_health_score_calculator():
+def test_health_score_calculator(sample_device_data):
     """Test health score calculator"""
     try:
         from AI_MODULES.health_score import HealthScoreCalculator
         
         calculator = HealthScoreCalculator()
-        sample_data = pd.DataFrame({
-            'temperature': [20, 22, 21, 25, 23],
-            'pressure': [1013, 1015, 1012, 1018, 1014],
-            'vibration': [0.1, 0.12, 0.09, 0.15, 0.11],
-            'efficiency': [85, 87, 83, 90, 86]
-        })
-        
-        result = calculator.calculate_overall_health_score(sample_data, device_id="TEST_001")
+        result = calculator.calculate_overall_health_score(sample_device_data, device_id="TEST_001")
         
         assert 'overall_score' in result
         assert 0 <= result['overall_score'] <= 1
@@ -26,22 +18,20 @@ def test_health_score_calculator():
     except ImportError:
         pytest.skip("HealthScoreCalculator not available")
 
-def test_predictive_analytics_engine():
+def test_predictive_analytics_engine(sample_device_data):
     """Test predictive analytics engine"""
     try:
         from AI_MODULES.predictive_analytics_engine import PredictiveAnalyticsEngine
         
         analytics = PredictiveAnalyticsEngine()
-        sample_data = pd.DataFrame({
-            'temperature': np.random.normal(25, 5, 100),
-            'pressure': np.random.normal(1013, 10, 100),
-            'timestamp': pd.date_range('2024-01-01', periods=100, freq='H')
-        })
+        # Test anomaly detection training
+        anomaly_result = analytics.train_anomaly_detector(sample_device_data.drop(columns=['timestamp']))
+        assert 'anomaly_ratio' in anomaly_result
         
-        features, target = analytics.prepare_data(sample_data)
+        # Test anomaly detection prediction
+        predictions = analytics.detect_anomalies(sample_device_data.drop(columns=['timestamp']))
+        assert 'anomaly_count' in predictions
         
-        assert features is not None
-        assert len(features.columns) > 0
     except ImportError:
         pytest.skip("PredictiveAnalyticsEngine not available")
 
@@ -51,30 +41,29 @@ def test_alert_manager():
         from AI_MODULES.alert_manager import AlertManager
         
         alert_manager = AlertManager()
-        test_data = {'temperature': 95, 'pressure': 1050, 'vibration': 0.8}
+        # Test a critical temperature alert
+        test_data = {'temperature': 98, 'pressure': 1010, 'vibration': 0.2}
         
-        alerts = alert_manager.evaluate_conditions(test_data, device_id="TEST_001")
+        alerts = alert_manager.evaluate_conditions(test_data, device_id="TEST_ALERT")
         
         assert isinstance(alerts, list)
         assert len(alerts) > 0
+        assert alerts[0]['rule_name'] == 'temperature_critical'
+        assert alerts[0]['severity'] == 'critical'
     except ImportError:
         pytest.skip("AlertManager not available")
 
-def test_pattern_analyzer():
+def test_pattern_analyzer(sample_device_data):
     """Test pattern analyzer"""
     try:
         from AI_MODULES.pattern_analyzer import PatternAnalyzer
         
         analyzer = PatternAnalyzer()
-        timestamps = pd.date_range('2024-01-01', periods=100, freq='H')
-        sample_data = pd.DataFrame({
-            'timestamp': timestamps,
-            'value': 20 + 5 * np.sin(np.arange(100) * 2 * np.pi / 24) + np.random.normal(0, 1, 100)
-        })
         
-        result = analyzer.analyze_temporal_patterns(sample_data, 'timestamp', ['value'])
+        result = analyzer.analyze_temporal_patterns(sample_device_data, 'timestamp', ['temperature'])
         
         assert 'patterns_found' in result
-        assert isinstance(result['patterns_found'], dict)
+        assert 'temperature' in result['patterns_found']
+        assert 'cyclical' in result['patterns_found']['temperature']
     except ImportError:
         pytest.skip("PatternAnalyzer not available")

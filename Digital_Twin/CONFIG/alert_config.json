@@ -44,8 +44,8 @@
       "enabled": true,
       "smtp_server": "smtp.gmail.com",
       "smtp_port": 587,
-      "username": "alerts@company.com",
-      "password": "your_password",
+      "username": "newmilan91@gmail.com",
+      "password": "486258",
       "recipients": [
         "admin@company.com",
         "maintenance@company.com"
