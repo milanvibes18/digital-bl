@@ -1,198 +1,315 @@
-import { useState, useEffect } from 'react';
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from './ui/card';
-import { KPICard } from './KPICard';
-import { DeviceCard } from './DeviceCard';
-import { AlertCard } from './AlertCard';
-import {
-  Activity,
-  Cpu,
-  Zap,
-  TrendingUp,
-  Wifi,
+import { useState, useEffect, useRef } from 'react'
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from './ui/card'
+import { KPICard } from './KPICard'
+import { DeviceCard } from './DeviceCard'
+import { AlertCard } from './AlertCard'
+import { ThresholdSettings } from './ThresholdSettings'
+import { EmailLogsView } from './EmailLogsView'
+import { 
+  Activity, 
+  Cpu, 
+  Zap, 
+  TrendingUp, 
+  Wifi, 
   RefreshCw,
   Download,
   FileText,
   Bell,
-} from 'lucide-react';
-import { Device, Alert, DashboardData, TimeRange } from '../types/digital-twin';
-import {
-  getDevices,
-  getAlerts,
-  generateSampleData,
+  Settings,
+  Mail
+} from 'lucide-react'
+import { Device, Alert, DashboardData, TimeRange } from '../types/digital-twin'
+import { 
+  getDevices, 
+  getAlerts, 
+  generateSampleData, 
   initializeDatabase,
-  acknowledgeAlert,
-} from '../utils/db';
-import { blink } from '../blink/client';
-import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
-import { cn } from '../utils/cn';
-
-// Import a WebSocket client library if you don't have one
-import io from 'socket.io-client';
-
-// Define the socket connection
-const socket = io('http://localhost:5000'); // Adjust the URL to your backend
+  acknowledgeAlert
+} from '../utils/db'
+import { blink } from '../blink/client'
+import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts'
+import { cn } from '../utils/cn'
+import { DataSimulator, defaultThresholds } from '../utils/data-simulator'
+import { useToast } from '../hooks/use-toast'
+import { Button } from './ui/button'
 
 export function Dashboard() {
-  const [devices, setDevices] = useState<Device[]>([]);
-  const [alerts, setAlerts] = useState<Alert[]>([]);
-  const [dashboardData, setDashboardData] = useState<DashboardData | null>(null);
-  const [timeRange, setTimeRange] = useState<TimeRange>('24h');
-  const [loading, setLoading] = useState(true);
-  const [userId] = useState('demo-user');
+  const [devices, setDevices] = useState<Device[]>([])
+  const [alerts, setAlerts] = useState<Alert[]>([])
+  const [dashboardData, setDashboardData] = useState<DashboardData | null>(null)
+  const [timeRange, setTimeRange] = useState<TimeRange>('24h')
+  const [loading, setLoading] = useState(true)
+  const [userId] = useState('demo-user')
+  const [lastUpdate, setLastUpdate] = useState(Date.now())
+  const [showThresholds, setShowThresholds] = useState(false)
+  const [showEmailLogs, setShowEmailLogs] = useState(false)
+  const [newCriticalAlerts, setNewCriticalAlerts] = useState<Set<string>>(new Set())
+  const [isExporting, setIsExporting] = useState(false)
+  
+  const simulatorRef = useRef<DataSimulator | null>(null)
+  const { toast } = useToast()
 
   const timeRangeOptions: { label: string; value: TimeRange }[] = [
     { label: '1H', value: '1h' },
     { label: '4H', value: '4h' },
     { label: '24H', value: '24h' },
     { label: '7D', value: '7d' },
-    { label: '30D', value: '30d' },
-  ];
+    { label: '30D', value: '30d' }
+  ]
 
   useEffect(() => {
-    initializeApp();
-
-    // Listen for real-time data updates
-    socket.on('data_update', (data: DashboardData) => {
-      setDashboardData(data);
-      // You might need to update devices and alerts as well if they are part of the payload
-    });
-
-    // Listen for new alerts
-    socket.on('alert_update', (newAlert: Alert) => {
-      setAlerts((prevAlerts) => [newAlert, ...prevAlerts]);
-    });
-
-    // Clean up the socket connection when the component unmounts
+    initializeApp()
+    
     return () => {
-      socket.off('data_update');
-      socket.off('alert_update');
-    };
-  }, []);
+      // Cleanup simulator on component unmount
+      if (simulatorRef.current) {
+        simulatorRef.current.stop()
+      }
+    }
+  }, [])
+
+  // Set up real-time data refresh every 5 seconds
+  useEffect(() => {
+    const interval = setInterval(() => {
+      if (!loading) {
+        loadData()
+        setLastUpdate(Date.now())
+      }
+    }, 5000)
+
+    return () => clearInterval(interval)
+  }, [loading])
 
   const initializeApp = async () => {
     try {
-      setLoading(true);
-      await initializeDatabase();
-
-      const existingDevices = await getDevices(userId);
+      setLoading(true)
+      await initializeDatabase()
+      
+      // Check if we have any devices, if not generate sample data
+      const existingDevices = await getDevices(userId)
       if (existingDevices.length === 0) {
-        await generateSampleData(userId);
+        await generateSampleData(userId)
       }
-
-      await loadData();
+      
+      // Initialize default thresholds if none exist
+      const existingThresholds = await (blink.db as any).alertThresholds.list({ where: { userId } })
+      if (existingThresholds.length === 0) {
+        await Promise.all(
+          defaultThresholds.map((threshold: any) => 
+            (blink.db as any).alertThresholds.create({
+              ...threshold,
+              id: `THRESH_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
+              userId
+            })
+          )
+        )
+      }
+      
+      // Start the data simulator
+      simulatorRef.current = new DataSimulator(userId)
+      simulatorRef.current.start()
+      
+      await loadData()
     } catch (error) {
-      console.error('Error initializing app:', error);
+      console.error('Error initializing app:', error)
     } finally {
-      setLoading(false);
+      setLoading(false)
     }
-  };
+  }
 
   const loadData = async () => {
     try {
       const [devicesData, alertsData] = await Promise.all([
         getDevices(userId),
-        getAlerts(userId, 10),
-      ]);
-
-      setDevices(devicesData);
-      setAlerts(alertsData);
-
-      // This part will now be handled by the WebSocket `data_update` event
-      // but we can keep it for the initial load.
-      updateDashboardMetrics(devicesData);
-
+        getAlerts(userId, 10)
+      ])
+      
+      // Check for new critical alerts and add pulse effect
+      const previousCriticalAlerts = alerts.filter(a => a.severity === 'critical' && !a.acknowledged)
+      const currentCriticalAlerts = alertsData.filter(a => a.severity === 'critical' && !a.acknowledged)
+      
+      const newAlerts = currentCriticalAlerts.filter(current => 
+        !previousCriticalAlerts.some(prev => prev.id === current.id)
+      )
+      
+      if (newAlerts.length > 0) {
+        const newAlertIds = new Set(newAlerts.map(alert => alert.id))
+        setNewCriticalAlerts(newAlertIds as Set<string>)
+        
+        // Clear the pulse effect after 3 seconds
+        setTimeout(() => {
+          setNewCriticalAlerts(new Set<string>())
+        }, 3000)
+      }
+      
+      setDevices(devicesData)
+      setAlerts(alertsData)
+      
+      // Calculate dashboard metrics
+      const totalDevices = devicesData.length
+      const activeDevices = devicesData.filter(d => d.status !== 'offline').length
+      const systemHealth = devicesData.reduce((avg, device) => avg + device.healthScore, 0) / totalDevices * 100
+      const efficiency = devicesData.reduce((avg, device) => avg + device.efficiencyScore, 0) / totalDevices * 100
+      const energyUsage = devicesData
+        .filter(d => d.type === 'power_meter')
+        .reduce((sum, device) => sum + device.value, 0)
+      
+      // Generate sample performance data with real-time variation
+      const performanceData = Array.from({ length: 24 }, (_, i) => ({
+        timestamp: `${String(i).padStart(2, '0')}:00`,
+        systemHealth: Math.max(0, Math.min(100, systemHealth + Math.sin(i * 0.2) * 10 + Math.random() * 5)),
+        efficiency: Math.max(0, Math.min(100, efficiency + Math.cos(i * 0.15) * 8 + Math.random() * 4)),
+        energyUsage: Math.max(0, energyUsage + Math.sin(i * 0.1) * energyUsage * 0.2)
+      }))
+      
+      setDashboardData({
+        systemHealth: Math.round(systemHealth),
+        activeDevices,
+        totalDevices,
+        efficiency: Math.round(efficiency),
+        energyUsage: Math.round(energyUsage),
+        energyCost: Math.round(energyUsage * 0.12), // $0.12 per kWh
+        performanceData,
+        statusDistribution: {
+          normal: devicesData.filter(d => d.status === 'normal').length,
+          warning: devicesData.filter(d => d.status === 'warning').length,
+          critical: devicesData.filter(d => d.status === 'critical').length,
+          offline: devicesData.filter(d => d.status === 'offline').length
+        }
+      })
     } catch (error) {
-      console.error('Error loading data:', error);
+      console.error('Error loading data:', error)
     }
-  };
-
-  const updateDashboardMetrics = (devicesData: Device[]) => {
-    const totalDevices = devicesData.length;
-    const activeDevices = devicesData.filter((d) => d.status !== 'offline').length;
-    const systemHealth =
-      devicesData.reduce((avg, device) => avg + device.healthScore, 0) /
-      totalDevices *
-      100;
-    const efficiency =
-      devicesData.reduce((avg, device) => avg + device.efficiencyScore, 0) /
-      totalDevices *
-      100;
-    const energyUsage = devicesData
-      .filter((d) => d.type === 'power_meter')
-      .reduce((sum, device) => sum + device.value, 0);
-
-    const performanceData = Array.from({ length: 24 }, (_, i) => ({
-      timestamp: `${String(i).padStart(2, '0')}:00`,
-      systemHealth: systemHealth + Math.sin(i * 0.2) * 10 + Math.random() * 5,
-      efficiency: efficiency + Math.cos(i * 0.15) * 8 + Math.random() * 4,
-      energyUsage: energyUsage + Math.sin(i * 0.1) * energyUsage * 0.2,
-    }));
-
-    setDashboardData({
-      systemHealth: Math.round(systemHealth),
-      activeDevices,
-      totalDevices,
-      efficiency: Math.round(efficiency),
-      energyUsage: Math.round(energyUsage),
-      energyCost: Math.round(energyUsage * 0.12),
-      performanceData,
-      statusDistribution: {
-        normal: devicesData.filter((d) => d.status === 'normal').length,
-        warning: devicesData.filter((d) => d.status === 'warning').length,
-        critical: devicesData.filter((d) => d.status === 'critical').length,
-        offline: devicesData.filter((d) => d.status === 'offline').length,
-      },
-    });
   }
 
   const handleRefresh = () => {
-    setLoading(true);
-    loadData().finally(() => setLoading(false));
-  };
+    loadData()
+    setLastUpdate(Date.now())
+    toast({
+      title: "Data Refreshed",
+      description: "Dashboard data has been updated."
+    })
+  }
 
   const handleAcknowledgeAlert = async (alertId: string) => {
     try {
-      await acknowledgeAlert(alertId);
-      setAlerts(
-        alerts.map((alert) =>
-          alert.id === alertId ? { ...alert, acknowledged: true } : alert
-        )
-      );
+      await acknowledgeAlert(alertId)
+      setAlerts(alerts.map(alert => 
+        alert.id === alertId ? { ...alert, acknowledged: true } : alert
+      ))
+      toast({
+        title: "Alert Acknowledged",
+        description: "The alert has been marked as acknowledged."
+      })
     } catch (error) {
-      console.error('Error acknowledging alert:', error);
+      console.error('Error acknowledging alert:', error)
+      toast({
+        title: "Error",
+        description: "Failed to acknowledge alert.",
+        variant: "destructive"
+      })
     }
-  };
+  }
+
+  const handleExport = async () => {
+    try {
+      setIsExporting(true)
+      
+      // Generate CSV data
+      const csvData = [
+        ['Device ID', 'Name', 'Type', 'Status', 'Value', 'Unit', 'Health Score', 'Efficiency Score', 'Location', 'Last Updated'],
+        ...devices.map(device => [
+          device.id,
+          device.name,
+          device.type,
+          device.status,
+          device.value.toString(),
+          device.unit,
+          (device.healthScore * 100).toFixed(1) + '%',
+          (device.efficiencyScore * 100).toFixed(1) + '%',
+          device.location,
+          new Date(device.timestamp).toLocaleString()
+        ])
+      ]
+      
+      const csvContent = csvData.map(row => row.join(',')).join('\n')
+      const blob = new Blob([csvContent], { type: 'text/csv' })
+      const url = window.URL.createObjectURL(blob)
+      
+      const a = document.createElement('a')
+      a.href = url
+      a.download = `iot-dashboard-export-${new Date().toISOString().split('T')[0]}.csv`
+      document.body.appendChild(a)
+      a.click()
+      document.body.removeChild(a)
+      window.URL.revokeObjectURL(url)
+      
+      toast({
+        title: "Export Successful",
+        description: "Device data has been exported to CSV."
+      })
+    } catch (error) {
+      console.error('Error exporting data:', error)
+      toast({
+        title: "Export Failed",
+        description: "Failed to export data.",
+        variant: "destructive"
+      })
+    } finally {
+      setIsExporting(false)
+    }
+  }
 
   const handleGenerateReport = async () => {
     try {
-      const response = await fetch('/api/generate_report');
-      if (response.ok) {
-        const data = await response.json();
-        // You can open the report in a new tab or trigger a download
-        window.open(data.report_path, '_blank');
-      } else {
-        console.error('Failed to generate report');
+      setIsExporting(true)
+      
+      // Generate comprehensive report data
+      const reportData = {
+        generatedAt: new Date().toISOString(),
+        summary: {
+          totalDevices: devices.length,
+          activeDevices: devices.filter(d => d.status !== 'offline').length,
+          systemHealth: dashboardData?.systemHealth || 0,
+          efficiency: dashboardData?.efficiency || 0,
+          energyUsage: dashboardData?.energyUsage || 0
+        },
+        devices: devices.map(device => ({
+          ...device,
+          healthScorePercent: (device.healthScore * 100).toFixed(1),
+          efficiencyScorePercent: (device.efficiencyScore * 100).toFixed(1)
+        })),
+        alerts: alerts.slice(0, 20), // Include recent alerts
+        statusDistribution: dashboardData?.statusDistribution
       }
+      
+      const reportJson = JSON.stringify(reportData, null, 2)
+      const blob = new Blob([reportJson], { type: 'application/json' })
+      const url = window.URL.createObjectURL(blob)
+      
+      const a = document.createElement('a')
+      a.href = url
+      a.download = `iot-dashboard-report-${new Date().toISOString().split('T')[0]}.json`
+      document.body.appendChild(a)
+      a.click()
+      document.body.removeChild(a)
+      window.URL.revokeObjectURL(url)
+      
+      toast({
+        title: "Report Generated",
+        description: "Comprehensive system report has been generated."
+      })
     } catch (error) {
-      console.error('Error generating report:', error);
+      console.error('Error generating report:', error)
+      toast({
+        title: "Report Generation Failed",
+        description: "Failed to generate report.",
+        variant: "destructive"
+      })
+    } finally {
+      setIsExporting(false)
     }
-  };
-
-  const handleExportData = async () => {
-    try {
-      const response = await fetch('/api/export_data?format=csv');
-      if (response.ok) {
-        const data = await response.json();
-        // Trigger a download of the exported data
-        window.location.href = data.export_path;
-      } else {
-        console.error('Failed to export data');
-      }
-    } catch (error) {
-      console.error('Error exporting data:', error);
-    }
-  };
-
+  }
 
   if (loading) {
     return (
@@ -202,7 +319,7 @@ export function Dashboard() {
           <span>Loading Dashboard...</span>
         </div>
       </div>
-    );
+    )
   }
 
   return (
@@ -220,37 +337,62 @@ export function Dashboard() {
                 Real-time Industrial IoT Monitoring & Analytics
               </p>
             </div>
-
+            
             <div className="flex items-center gap-4">
               <div className="flex items-center gap-1">
                 <Wifi className="h-4 w-4 text-green-500" />
                 <span className="text-sm text-muted-foreground">Connected</span>
+                <span className="text-xs text-muted-foreground/70 ml-2">
+                  Last update: {new Date(lastUpdate).toLocaleTimeString()}
+                </span>
               </div>
-
+              
               <div className="flex items-center gap-2">
-                <button
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setShowThresholds(true)}
+                >
+                  <Settings className="h-4 w-4" />
+                  Settings
+                </Button>
+                
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setShowEmailLogs(true)}
+                >
+                  <Mail className="h-4 w-4" />
+                  Email Logs
+                </Button>
+                
+                <Button
+                  variant="outline"
+                  size="sm"
                   onClick={handleRefresh}
-                  className="px-3 py-2 bg-secondary text-secondary-foreground rounded-md hover:bg-secondary/80 transition-colors flex items-center gap-2"
                 >
                   <RefreshCw className="h-4 w-4" />
                   Refresh
-                </button>
-
-                <button
-                  onClick={handleExportData}
-                  className="px-3 py-2 bg-secondary text-secondary-foreground rounded-md hover:bg-secondary/80 transition-colors flex items-center gap-2"
+                </Button>
+                
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={handleExport}
+                  disabled={isExporting}
                 >
                   <Download className="h-4 w-4" />
                   Export
-                </button>
-
-                <button
+                </Button>
+                
+                <Button
+                  size="sm"
                   onClick={handleGenerateReport}
-                  className="px-3 py-2 bg-primary text-primary-foreground rounded-md hover:bg-primary/80 transition-colors flex items-center gap-2"
+                  disabled={isExporting}
                 >
                   <FileText className="h-4 w-4" />
                   Report
-                </button>
+                </Button>
               </div>
             </div>
           </div>
@@ -261,15 +403,15 @@ export function Dashboard() {
         {/* Time Range Selector */}
         <div className="mb-8">
           <div className="flex items-center gap-2">
-            {timeRangeOptions.map((option) => (
+            {timeRangeOptions.map(option => (
               <button
                 key={option.value}
                 onClick={() => setTimeRange(option.value)}
                 className={cn(
-                  'px-3 py-1 rounded-md text-sm font-medium transition-colors',
-                  timeRange === option.value
-                    ? 'bg-primary text-primary-foreground'
-                    : 'bg-secondary text-secondary-foreground hover:bg-secondary/80'
+                  "px-3 py-1 rounded-md text-sm font-medium transition-colors",
+                  timeRange === option.value 
+                    ? "bg-primary text-primary-foreground" 
+                    : "bg-secondary text-secondary-foreground hover:bg-secondary/80"
                 )}
               >
                 {option.label}
@@ -285,38 +427,36 @@ export function Dashboard() {
             value={`${dashboardData?.systemHealth || 0}%`}
             icon={Activity}
             variant="success"
-            trend={{ value: '+2.1%', direction: 'up' }}
+            trend={{ value: "+2.1%", direction: "up" }}
             loading={!dashboardData}
           />
-
+          
           <KPICard
             title="Active Devices"
-            value={`${dashboardData?.activeDevices || 0}/${
-              dashboardData?.totalDevices || 0
-            }`}
+            value={`${dashboardData?.activeDevices || 0}/${dashboardData?.totalDevices || 0}`}
             subtitle={`${dashboardData?.statusDistribution.offline || 0} offline`}
             icon={Cpu}
             variant="default"
             loading={!dashboardData}
           />
-
+          
           <KPICard
             title="Energy Usage"
             value={`${dashboardData?.energyUsage || 0} kW`}
             subtitle={`$${dashboardData?.energyCost || 0}/hour`}
             icon={Zap}
             variant="warning"
-            trend={{ value: '-0.8%', direction: 'down' }}
+            trend={{ value: "-0.8%", direction: "down" }}
             loading={!dashboardData}
           />
-
+          
           <KPICard
             title="Efficiency"
             value={`${dashboardData?.efficiency || 0}%`}
             subtitle="Predicted 24h"
             icon={TrendingUp}
             variant="info"
-            trend={{ value: '+1.2%', direction: 'up' }}
+            trend={{ value: "+1.2%", direction: "up" }}
             loading={!dashboardData}
           />
         </div>
@@ -327,42 +467,34 @@ export function Dashboard() {
             <Card>
               <CardHeader>
                 <CardTitle>Performance Metrics</CardTitle>
-                <CardDescription>
-                  Real-time system performance over time
-                </CardDescription>
+                <CardDescription>Real-time system performance over time</CardDescription>
               </CardHeader>
               <CardContent>
                 <div className="h-[400px]">
                   <ResponsiveContainer width="100%" height="100%">
                     <LineChart data={dashboardData?.performanceData || []}>
-                      <CartesianGrid
-                        strokeDasharray="3 3"
-                        stroke="hsl(var(--border))"
-                      />
-                      <XAxis
-                        dataKey="timestamp"
-                        stroke="hsl(var(--muted-foreground))"
-                      />
+                      <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" />
+                      <XAxis dataKey="timestamp" stroke="hsl(var(--muted-foreground))" />
                       <YAxis stroke="hsl(var(--muted-foreground))" />
-                      <Tooltip
-                        contentStyle={{
-                          backgroundColor: 'hsl(var(--card))',
+                      <Tooltip 
+                        contentStyle={{ 
+                          backgroundColor: 'hsl(var(--card))', 
                           border: '1px solid hsl(var(--border))',
-                          borderRadius: '8px',
-                        }}
+                          borderRadius: '8px'
+                        }} 
                       />
-                      <Line
-                        type="monotone"
-                        dataKey="systemHealth"
-                        stroke="hsl(var(--success))"
+                      <Line 
+                        type="monotone" 
+                        dataKey="systemHealth" 
+                        stroke="hsl(var(--success))" 
                         strokeWidth={2}
                         dot={false}
                         name="System Health %"
                       />
-                      <Line
-                        type="monotone"
-                        dataKey="efficiency"
-                        stroke="hsl(var(--primary))"
+                      <Line 
+                        type="monotone" 
+                        dataKey="efficiency" 
+                        stroke="hsl(var(--primary))" 
                         strokeWidth={2}
                         dot={false}
                         name="Efficiency %"
@@ -376,34 +508,44 @@ export function Dashboard() {
 
           {/* Critical Alerts */}
           <div>
-            <Card>
+            <Card className={cn(
+              "transition-all duration-300",
+              newCriticalAlerts.size > 0 && "ring-2 ring-red-500 shadow-red-500/20 shadow-lg animate-pulse"
+            )}>
               <CardHeader>
                 <CardTitle className="flex items-center gap-2">
-                  <Bell className="h-5 w-5" />
+                  <Bell className={cn(
+                    "h-5 w-5",
+                    newCriticalAlerts.size > 0 && "text-red-500 animate-pulse"
+                  )} />
                   Critical Alerts
-                  <span className="ml-auto bg-red-500 text-white text-xs px-2 py-1 rounded-full">
-                    {
-                      alerts.filter(
-                        (a) => a.severity === 'critical' && !a.acknowledged
-                      ).length
-                    }
+                  <span className={cn(
+                    "ml-auto text-white text-xs px-2 py-1 rounded-full transition-colors",
+                    newCriticalAlerts.size > 0 
+                      ? "bg-red-600 animate-pulse" 
+                      : "bg-red-500"
+                  )}>
+                    {alerts.filter(a => a.severity === 'critical' && !a.acknowledged).length}
                   </span>
                 </CardTitle>
                 <CardDescription>Requires immediate attention</CardDescription>
               </CardHeader>
               <CardContent className="space-y-4">
-                {alerts
-                  .filter((a) => a.severity === 'critical')
-                  .slice(0, 3)
-                  .map((alert) => (
+                {alerts.filter(a => a.severity === 'critical').slice(0, 3).map(alert => (
+                  <div
+                    key={alert.id}
+                    className={cn(
+                      "transition-all duration-300",
+                      newCriticalAlerts.has(alert.id) && "ring-2 ring-red-400 shadow-md animate-pulse"
+                    )}
+                  >
                     <AlertCard
-                      key={alert.id}
                       alert={alert}
                       onAcknowledge={() => handleAcknowledgeAlert(alert.id)}
                     />
-                  ))}
-                {alerts.filter((a) => a.severity === 'critical').length ===
-                  0 && (
+                  </div>
+                ))}
+                {alerts.filter(a => a.severity === 'critical').length === 0 && (
                   <p className="text-muted-foreground text-center py-8">
                     No critical alerts
                   </p>
@@ -418,13 +560,11 @@ export function Dashboard() {
           <Card>
             <CardHeader>
               <CardTitle>Device Status</CardTitle>
-              <CardDescription>
-                Real-time monitoring of all connected devices
-              </CardDescription>
+              <CardDescription>Real-time monitoring of all connected devices</CardDescription>
             </CardHeader>
             <CardContent>
               <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4 gap-4">
-                {devices.map((device) => (
+                {devices.map(device => (
                   <DeviceCard
                     key={device.id}
                     device={device}
@@ -436,6 +576,26 @@ export function Dashboard() {
           </Card>
         </div>
       </div>
+
+      {/* Settings Modal */}
+      {showThresholds && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
+          <ThresholdSettings 
+            userId={userId} 
+            onClose={() => setShowThresholds(false)} 
+          />
+        </div>
+      )}
+
+      {/* Email Logs Modal */}
+      {showEmailLogs && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
+          <EmailLogsView 
+            userId={userId} 
+            onClose={() => setShowEmailLogs(false)} 
+          />
+        </div>
+      )}
     </div>
-  );
+  )
 }

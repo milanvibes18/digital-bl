@@ -1,3 +1,4 @@
+// this is my existing digital-twin.ts ocde
 export interface Device {
   id: string;
   name: string;

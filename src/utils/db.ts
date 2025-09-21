@@ -133,10 +133,10 @@ export const generateSampleData = async (userId: string) => {
   try {
     // Insert all sample data
     await Promise.all([
-      ...devices.map(device => blink.db.devices.create(device)),
-      ...alerts.map(alert => blink.db.alerts.create(alert)),
-      ...maintenanceTasks.map(task => blink.db.maintenanceTasks.create(task)),
-      ...recommendations.map(rec => blink.db.recommendations.create(rec))
+      ...devices.map(device => db.devices.create(device)),
+      ...alerts.map(alert => db.alerts.create(alert)),
+      ...maintenanceTasks.map(task => db.maintenanceTasks.create(task)),
+      ...recommendations.map(rec => db.recommendations.create(rec))
     ])
     
     console.log('Sample data generated successfully')
@@ -156,25 +156,35 @@ function getUnitForType(deviceType: Device['type']): string {
   return units[deviceType]
 }
 
+// Type-safe database access helpers
+const db = {
+  devices: (blink.db as any).devices,
+  alerts: (blink.db as any).alerts,
+  maintenanceTasks: (blink.db as any).maintenanceTasks,
+  recommendations: (blink.db as any).recommendations,
+  alertThresholds: (blink.db as any).alertThresholds,
+  emailAlerts: (blink.db as any).emailAlerts
+}
+
 // Data fetching functions
 export const getDevices = (userId: string) => 
-  blink.db.devices.list({ where: { userId }, orderBy: { timestamp: 'desc' } })
+  db.devices.list({ where: { userId }, orderBy: { timestamp: 'desc' } })
 
 export const getAlerts = (userId: string, limit = 10) => 
-  blink.db.alerts.list({ where: { userId }, orderBy: { timestamp: 'desc' }, limit })
+  db.alerts.list({ where: { userId }, orderBy: { timestamp: 'desc' }, limit })
 
 export const getMaintenanceTasks = (userId: string) => 
-  blink.db.maintenanceTasks.list({ where: { userId }, orderBy: { dueDate: 'asc' } })
+  db.maintenanceTasks.list({ where: { userId }, orderBy: { dueDate: 'asc' } })
 
 export const getRecommendations = (userId: string) => 
-  blink.db.recommendations.list({ where: { userId }, orderBy: { createdAt: 'desc' } })
+  db.recommendations.list({ where: { userId }, orderBy: { createdAt: 'desc' } })
 
 // Update functions
 export const updateDeviceStatus = (deviceId: string, status: Device['status']) =>
-  blink.db.devices.update(deviceId, { status, timestamp: new Date().toISOString() })
+  db.devices.update(deviceId, { status, timestamp: new Date().toISOString() })
 
 export const acknowledgeAlert = (alertId: string) =>
-  blink.db.alerts.update(alertId, { acknowledged: true })
+  db.alerts.update(alertId, { acknowledged: true })
 
 export const completeMaintenanceTask = (taskId: string) =>
-  blink.db.maintenanceTasks.update(taskId, { status: 'completed' })
+  db.maintenanceTasks.update(taskId, { status: 'completed' })

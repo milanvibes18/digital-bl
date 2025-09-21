@@ -1,6 +1,14 @@
 import { Card } from './ui/card'
 import { cn } from '../utils/cn'
-import { LucideIcon } from 'lucide-react'
+import React from 'react'
+
+// LucideIcon type - generic icon component type
+type LucideIcon = React.ComponentType<{
+  size?: string | number
+  color?: string
+  strokeWidth?: string | number
+  className?: string
+}>
 
 interface KPICardProps {
   title: string

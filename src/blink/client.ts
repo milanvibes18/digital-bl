@@ -1,7 +1,7 @@
 import { createClient } from '@blinkdotnew/sdk'
 
 export const blink = createClient({
-  projectId: 'readme-driven-project-completion-assistant-my1e2tyf',
+  projectId: 'digital-twin-iiot-platform-6r64p77c',
   authRequired: false
 })
 
