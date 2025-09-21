@@ -21,9 +21,11 @@ from functools import wraps
 import hashlib
 import hmac
 import secrets
+import math
+import random
 
 # Flask imports
-from flask import Flask, render_template, request, jsonify, session, redirect, url_for, flash
+from flask import Flask, render_template, request, jsonify, session, redirect, url_for, flash, send_from_directory
 from flask_cors import CORS
 from flask_socketio import SocketIO, emit, join_room, leave_room, disconnect
 import eventlet
@@ -38,6 +40,8 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 # Import custom modules
 try:
     from CONFIG.app_config import config
+    from CONFIG.unified_data_generator import UnifiedDataGenerator
+    from REPORTS.health_report_generator import HealthReportGenerator
     from AI_MODULES.secure_database_manager import SecureDatabaseManager
     from AI_MODULES.predictive_analytics_engine import PredictiveAnalyticsEngine
     from AI_MODULES.health_score import HealthScoreCalculator
@@ -60,11 +64,13 @@ class DigitalTwinApp:
         self.alert_manager = None
         self.pattern_analyzer = None
         self.recommendation_engine = None
+        self.data_generator = None
         
         # Application state
         self.connected_clients = {}
         self.data_cache = {}
         self.last_update = datetime.now()
+        self.start_time = datetime.now()
         
         # Initialize logging
         self.setup_logging()
@@ -72,8 +78,8 @@ class DigitalTwinApp:
         # Initialize Flask app
         self.create_app()
         
-        # Initialize AI modules
-        self.initialize_ai_modules()
+        # Initialize all modules
+        self.initialize_modules()
         
         # Setup routes
         self.setup_routes()
@@ -86,6 +92,9 @@ class DigitalTwinApp:
     
     def setup_logging(self):
         """Setup comprehensive logging system"""
+        # Ensure logs directory exists
+        os.makedirs('LOGS', exist_ok=True)
+        
         logging.basicConfig(
             level=logging.INFO,
             format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
@@ -99,7 +108,7 @@ class DigitalTwinApp:
     
     def create_app(self):
         """Create and configure Flask application"""
-        self.app = Flask(__name__)
+        self.app = Flask(__name__, static_folder='static', template_folder='templates')
         
         # Configuration
         self.app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', secrets.token_hex(32))
@@ -122,35 +131,214 @@ class DigitalTwinApp:
         
         self.logger.info("Flask application created successfully")
     
-    def initialize_ai_modules(self):
-        """Initialize AI and analytics modules"""
+    def initialize_modules(self):
+        """Initialize AI, analytics, and data generation modules"""
         try:
-            # Database manager
-            self.db_manager = SecureDatabaseManager()
-            self.logger.info("Database manager initialized")
+            # Initialize core modules
+            self.db_manager = SecureDatabaseManager() if 'SecureDatabaseManager' in globals() else None
+            self.analytics_engine = PredictiveAnalyticsEngine() if 'PredictiveAnalyticsEngine' in globals() else None
+            self.health_calculator = HealthScoreCalculator() if 'HealthScoreCalculator' in globals() else None
+            self.alert_manager = AlertManager() if 'AlertManager' in globals() else None
+            self.pattern_analyzer = PatternAnalyzer() if 'PatternAnalyzer' in globals() else None
+            self.recommendation_engine = RecommendationEngine() if 'RecommendationEngine' in globals() else None
             
-            # Analytics engine
-            self.analytics_engine = PredictiveAnalyticsEngine()
-            self.logger.info("Analytics engine initialized")
+            # Initialize data generator
+            self.data_generator = UnifiedDataGenerator() if 'UnifiedDataGenerator' in globals() else None
             
-            # Health score calculator
-            self.health_calculator = HealthScoreCalculator()
-            self.logger.info("Health calculator initialized")
+            # Fallback alert manager if not available
+            if self.alert_manager is None:
+                self.alert_manager = self._create_fallback_alert_manager()
             
-            # Alert manager
-            self.alert_manager = AlertManager()
-            self.logger.info("Alert manager initialized")
+            # Fallback data generator if not available
+            if self.data_generator is None:
+                self.data_generator = self._create_fallback_data_generator()
             
-            # Pattern analyzer
-            self.pattern_analyzer = PatternAnalyzer()
-            self.logger.info("Pattern analyzer initialized")
-            
-            # Recommendation engine
-            self.recommendation_engine = RecommendationEngine()
-            self.logger.info("Recommendation engine initialized")
+            self.logger.info("All modules initialized successfully")
             
         except Exception as e:
-            self.logger.error(f"Error initializing AI modules: {e}")
+            self.logger.error(f"Error initializing modules: {e}")
+            # Initialize fallback components
+            self._initialize_fallback_modules()
+    
+    def _create_fallback_alert_manager(self):
+        """Create a fallback alert manager"""
+        class FallbackAlertManager:
+            def __init__(self):
+                self.alert_conditions = {
+                    'temperature_high': {'threshold': 80, 'operator': '>', 'severity': 'warning'},
+                    'temperature_critical': {'threshold': 100, 'operator': '>', 'severity': 'critical'},
+                    'pressure_high': {'threshold': 1050, 'operator': '>', 'severity': 'warning'},
+                    'vibration_high': {'threshold': 5.0, 'operator': '>', 'severity': 'warning'},
+                    'health_low': {'threshold': 0.5, 'operator': '<', 'severity': 'critical'},
+                }
+            
+            def evaluate_conditions(self, data, device_id):
+                """Evaluate alert conditions on device data"""
+                alerts = []
+                device_type = data.get('device_type', '')
+                value = data.get('value', 0)
+                health_score = data.get('health_score', 1.0)
+                
+                # Check value-based alerts
+                if 'temperature' in device_type and value > 80:
+                    severity = 'critical' if value > 100 else 'warning'
+                    alerts.append({
+                        'id': str(uuid.uuid4()),
+                        'device_id': device_id,
+                        'type': 'temperature_alert',
+                        'severity': severity,
+                        'description': f'Temperature {value}°C exceeds threshold',
+                        'timestamp': datetime.now().isoformat(),
+                        'value': value
+                    })
+                
+                elif 'pressure' in device_type and value > 1050:
+                    alerts.append({
+                        'id': str(uuid.uuid4()),
+                        'device_id': device_id,
+                        'type': 'pressure_alert',
+                        'severity': 'warning',
+                        'description': f'Pressure {value} hPa exceeds normal range',
+                        'timestamp': datetime.now().isoformat(),
+                        'value': value
+                    })
+                
+                elif 'vibration' in device_type and value > 5.0:
+                    alerts.append({
+                        'id': str(uuid.uuid4()),
+                        'device_id': device_id,
+                        'type': 'vibration_alert',
+                        'severity': 'warning',
+                        'description': f'Vibration {value} mm/s is elevated',
+                        'timestamp': datetime.now().isoformat(),
+                        'value': value
+                    })
+                
+                # Check health score alerts
+                if health_score < 0.5:
+                    alerts.append({
+                        'id': str(uuid.uuid4()),
+                        'device_id': device_id,
+                        'type': 'health_alert',
+                        'severity': 'critical',
+                        'description': f'Device health score {health_score:.1%} is critically low',
+                        'timestamp': datetime.now().isoformat(),
+                        'value': health_score
+                    })
+                
+                return alerts
+        
+        return FallbackAlertManager()
+    
+    def _create_fallback_data_generator(self):
+        """Create a fallback data generator"""
+        class FallbackDataGenerator:
+            def __init__(self):
+                self.device_types = ['temperature_sensor', 'pressure_sensor', 'vibration_sensor', 
+                                     'humidity_sensor', 'power_meter']
+                self.locations = ['Factory Floor A', 'Factory Floor B', 'Warehouse', 'Quality Lab']
+            
+            def generate_device_data(self, device_count=15, days_of_data=1, interval_minutes=5):
+                """Generate sample device data"""
+                data = []
+                current_time = datetime.now()
+                start_time = current_time - timedelta(days=days_of_data)
+                
+                # Generate time series
+                time_points = []
+                current = start_time
+                while current <= current_time:
+                    time_points.append(current)
+                    current += timedelta(minutes=interval_minutes)
+                
+                for device_idx in range(device_count):
+                    device_id = f'DEVICE_{device_idx+1:03d}'
+                    device_type = random.choice(self.device_types)
+                    device_name = f'{device_type.replace("_", " ").title()} {device_idx+1:03d}'
+                    location = random.choice(self.locations)
+                    
+                    for timestamp in time_points:
+                        # Generate realistic values based on device type
+                        if device_type == 'temperature_sensor':
+                            base_value = 25 + 15 * math.sin(timestamp.hour * 0.26)  # Daily cycle
+                            value = base_value + random.gauss(0, 3)
+                            unit = '°C'
+                        elif device_type == 'pressure_sensor':
+                            base_value = 1013 + 20 * math.sin(timestamp.hour * 0.1)
+                            value = base_value + random.gauss(0, 5)
+                            unit = 'hPa'
+                        elif device_type == 'vibration_sensor':
+                            base_value = 0.5 + 0.3 * math.sin(timestamp.hour * 0.3)
+                            value = base_value + random.exponential(0.2)
+                            unit = 'mm/s'
+                        elif device_type == 'humidity_sensor':
+                            base_value = 45 + 20 * math.sin(timestamp.hour * 0.2)
+                            value = base_value + random.gauss(0, 5)
+                            unit = '%RH'
+                        else:  # power_meter
+                            base_value = 800 + 400 * math.sin(timestamp.hour * 0.26)
+                            value = base_value + random.gauss(0, 50)
+                            unit = 'W'
+                        
+                        # Determine status based on value ranges
+                        if device_type == 'temperature_sensor':
+                            if value > 100:
+                                status = 'critical'
+                            elif value > 80:
+                                status = 'warning'
+                            else:
+                                status = 'normal'
+                        elif device_type == 'pressure_sensor':
+                            if value > 1080 or value < 950:
+                                status = 'critical'
+                            elif value > 1050 or value < 980:
+                                status = 'warning'
+                            else:
+                                status = 'normal'
+                        else:
+                            # Random status for other types
+                            status_prob = random.random()
+                            if status_prob > 0.9:
+                                status = 'critical'
+                            elif status_prob > 0.8:
+                                status = 'warning'
+                            else:
+                                status = 'normal'
+                        
+                        # Calculate health and efficiency scores
+                        if status == 'critical':
+                            health_score = random.uniform(0.1, 0.5)
+                            efficiency_score = random.uniform(0.3, 0.6)
+                        elif status == 'warning':
+                            health_score = random.uniform(0.5, 0.8)
+                            efficiency_score = random.uniform(0.6, 0.8)
+                        else:
+                            health_score = random.uniform(0.8, 1.0)
+                            efficiency_score = random.uniform(0.8, 1.0)
+                        
+                        data.append({
+                            'device_id': device_id,
+                            'device_name': device_name,
+                            'device_type': device_type,
+                            'location': location,
+                            'timestamp': timestamp,
+                            'value': round(value, 2),
+                            'unit': unit,
+                            'status': status,
+                            'health_score': round(health_score, 3),
+                            'efficiency_score': round(efficiency_score, 3)
+                        })
+                
+                return pd.DataFrame(data)
+        
+        return FallbackDataGenerator()
+    
+    def _initialize_fallback_modules(self):
+        """Initialize fallback modules when imports fail"""
+        if self.alert_manager is None:
+            self.alert_manager = self._create_fallback_alert_manager()
+        if self.data_generator is None:
+            self.data_generator = self._create_fallback_data_generator()
     
     def setup_routes(self):
         """Setup all Flask routes"""
@@ -159,32 +347,41 @@ class DigitalTwinApp:
         @self.app.route('/')
         def index():
             """Main dashboard page"""
-            return render_template('index.html')
+            try:
+                return render_template('index.html')
+            except:
+                return "Digital Twin API is running. Dashboard templates not found."
         
         @self.app.route('/dashboard')
         def enhanced_dashboard():
             """Enhanced dashboard with advanced analytics"""
-            return render_template('enhanced_dashboard.html')
+            try:
+                return render_template('enhanced_dashboard.html')
+            except:
+                return "Enhanced Dashboard - Templates not found."
         
         @self.app.route('/analytics')
         def analytics():
             """Analytics page"""
-            return render_template('analytics.html')
+            try:
+                return render_template('analytics.html')
+            except:
+                return "Analytics page - Templates not found."
         
         @self.app.route('/devices')
         def devices():
             """Device management page"""
-            return render_template('devices_view.html')
+            try:
+                return render_template('devices_view.html')
+            except:
+                return "Devices page - Templates not found."
         
         # Health check endpoint
         @self.app.route('/health')
         def health_check():
             """Health check endpoint for monitoring"""
             try:
-                # Check database connectivity
                 db_status = self.check_database_health()
-                
-                # Check AI modules
                 ai_status = self.check_ai_modules_health()
                 
                 status = {
@@ -193,7 +390,8 @@ class DigitalTwinApp:
                     'database': db_status,
                     'ai_modules': ai_status,
                     'uptime': self.get_uptime(),
-                    'version': '2.0.0'
+                    'version': '2.0.0',
+                    'connected_clients': len(self.connected_clients)
                 }
                 
                 return jsonify(status), 200
@@ -206,7 +404,7 @@ class DigitalTwinApp:
                     'timestamp': datetime.now().isoformat()
                 }), 503
         
-        # API endpoints
+        # Core API endpoints
         @self.app.route('/api/dashboard_data')
         def get_dashboard_data():
             """Get main dashboard data"""
@@ -320,21 +518,196 @@ class DigitalTwinApp:
                 self.logger.error(f"Error getting recommendations: {e}")
                 return jsonify({'error': str(e)}), 500
         
-        # Data management endpoints
+        # NEW ENDPOINTS FOR BUTTONS
+        @self.app.route('/api/generate_report')
+        def generate_report_endpoint():
+            """Generate a health report and return its path"""
+            try:
+                self.logger.info("Generating health report via API request.")
+                
+                # Try to use actual report generator
+                try:
+                    if 'HealthReportGenerator' in globals():
+                        report_generator = HealthReportGenerator()
+                        html_path = report_generator.generate_comprehensive_report(date_range_days=7)
+                        report_filename = os.path.basename(html_path)
+                        return jsonify({
+                            'success': True,
+                            'report_path': f'/reports/{report_filename}',
+                            'message': 'Health report generated successfully'
+                        })
+                    else:
+                        raise ImportError("HealthReportGenerator not available")
+                except Exception as report_error:
+                    self.logger.warning(f"Report generator failed: {report_error}")
+                    # Generate a simple fallback report
+                    return self._generate_fallback_report()
+                
+            except Exception as e:
+                self.logger.error(f"Error generating report: {e}")
+                return jsonify({
+                    'success': False,
+                    'error': 'Failed to generate report',
+                    'details': str(e)
+                }), 500
+
+        @self.app.route('/reports/<filename>')
+        def serve_report(filename):
+            """Serve the generated report file"""
+            try:
+                reports_dir = os.path.join(os.path.dirname(__file__), '..', 'REPORTS', 'generated')
+                if not os.path.exists(reports_dir):
+                    os.makedirs(reports_dir, exist_ok=True)
+                return send_from_directory(reports_dir, filename)
+            except Exception as e:
+                self.logger.error(f"Error serving report: {e}")
+                return jsonify({'error': 'Report not found'}), 404
+
         @self.app.route('/api/export_data')
-        def export_data():
-            """Export data for analysis"""
+        def export_data_endpoint():
+            """Export data and provide download link"""
             try:
                 format_type = request.args.get('format', 'json')
                 date_range = request.args.get('days', 7, type=int)
                 
-                exported_data = self.export_data(format_type, date_range)
-                return jsonify(exported_data)
+                self.logger.info(f"Exporting data via API request. Format: {format_type}, Days: {date_range}")
+                
+                # Generate export data
+                export_data = self.export_data(format_type, date_range)
+                
+                # Save to file
+                exports_dir = os.path.join(os.path.dirname(__file__), '..', 'EXPORTS')
+                os.makedirs(exports_dir, exist_ok=True)
+                
+                timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+                if format_type.lower() == 'csv':
+                    filename = f'export_{timestamp}.csv'
+                    filepath = os.path.join(exports_dir, filename)
+                    # Convert to CSV if we have device data
+                    if 'devices' in export_data and export_data['devices']:
+                        devices_df = pd.DataFrame(export_data['devices'])
+                        devices_df.to_csv(filepath, index=False)
+                    else:
+                        # Fallback: create a simple CSV
+                        pd.DataFrame([{'message': 'No device data available', 'timestamp': datetime.now()}]).to_csv(filepath, index=False)
+                else:
+                    filename = f'export_{timestamp}.json'
+                    filepath = os.path.join(exports_dir, filename)
+                    with open(filepath, 'w') as f:
+                        json.dump(export_data, f, indent=2, default=str)
+                
+                return jsonify({
+                    'success': True,
+                    'message': f'Data export completed ({format_type.upper()})',
+                    'export_path': f'/exports/{filename}',
+                    'filename': filename,
+                    'records_exported': len(export_data.get('devices', []))
+                })
+                
             except Exception as e:
                 self.logger.error(f"Error exporting data: {e}")
-                return jsonify({'error': str(e)}), 500
+                return jsonify({
+                    'success': False,
+                    'error': 'Failed to export data',
+                    'details': str(e)
+                }), 500
+
+        @self.app.route('/exports/<filename>')
+        def serve_export(filename):
+            """Serve exported data files"""
+            try:
+                exports_dir = os.path.join(os.path.dirname(__file__), '..', 'EXPORTS')
+                return send_from_directory(exports_dir, filename)
+            except Exception as e:
+                self.logger.error(f"Error serving export: {e}")
+                return jsonify({'error': 'Export file not found'}), 404
         
         self.logger.info("All routes setup completed")
+    
+    def _generate_fallback_report(self):
+        """Generate a simple fallback report when the main generator is unavailable"""
+        try:
+            # Ensure reports directory exists
+            reports_dir = os.path.join(os.path.dirname(__file__), '..', 'REPORTS', 'generated')
+            os.makedirs(reports_dir, exist_ok=True)
+            
+            # Generate simple HTML report
+            timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+            filename = f'health_report_{timestamp}.html'
+            filepath = os.path.join(reports_dir, filename)
+            
+            # Get current data
+            dashboard_data = self.get_cached_dashboard_data()
+            
+            html_content = f"""
+            <!DOCTYPE html>
+            <html>
+            <head>
+                <title>Digital Twin Health Report</title>
+                <style>
+                    body {{ font-family: Arial, sans-serif; margin: 20px; }}
+                    .header {{ background-color: #f0f0f0; padding: 20px; border-radius: 5px; }}
+                    .metric {{ margin: 10px 0; padding: 10px; background-color: #f9f9f9; border-left: 4px solid #007bff; }}
+                    .devices {{ margin-top: 20px; }}
+                    .device {{ margin: 10px 0; padding: 15px; background-color: white; border: 1px solid #ddd; border-radius: 5px; }}
+                </style>
+            </head>
+            <body>
+                <div class="header">
+                    <h1>Digital Twin System Health Report</h1>
+                    <p>Generated on: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</p>
+                </div>
+                
+                <h2>System Overview</h2>
+                <div class="metric">System Health: {dashboard_data.get('systemHealth', 0)}%</div>
+                <div class="metric">Active Devices: {dashboard_data.get('activeDevices', 0)}/{dashboard_data.get('totalDevices', 0)}</div>
+                <div class="metric">System Efficiency: {dashboard_data.get('efficiency', 0)}%</div>
+                <div class="metric">Energy Usage: {dashboard_data.get('energyUsage', 0)} W</div>
+                
+                <h2>Device Status</h2>
+                <div class="devices">
+            """
+            
+            # Add device information
+            devices = dashboard_data.get('devices', [])
+            for device in devices[:10]:  # Limit to first 10 devices
+                html_content += f"""
+                    <div class="device">
+                        <h3>{device.get('device_name', 'Unknown Device')}</h3>
+                        <p>Status: <strong>{device.get('status', 'unknown').upper()}</strong></p>
+                        <p>Health Score: {device.get('health_score', 0):.1%}</p>
+                        <p>Current Value: {device.get('value', 0)} {device.get('unit', '')}</p>
+                        <p>Location: {device.get('location', 'Unknown')}</p>
+                    </div>
+                """
+            
+            html_content += """
+                </div>
+                
+                <div style="margin-top: 30px; padding: 15px; background-color: #e9ecef; border-radius: 5px;">
+                    <p><strong>Note:</strong> This is a simplified fallback report. For comprehensive analytics and detailed insights, please ensure all system modules are properly configured.</p>
+                </div>
+            </body>
+            </html>
+            """
+            
+            # Write the HTML file
+            with open(filepath, 'w') as f:
+                f.write(html_content)
+            
+            return jsonify({
+                'success': True,
+                'report_path': f'/reports/{filename}',
+                'message': 'Simplified health report generated successfully'
+            })
+            
+        except Exception as e:
+            self.logger.error(f"Error generating fallback report: {e}")
+            return jsonify({
+                'success': False,
+                'error': 'Failed to generate fallback report',
+                'details': str(e)
+            }), 500
     
     def setup_websocket_events(self):
         """Setup WebSocket event handlers"""
@@ -342,8 +715,7 @@ class DigitalTwinApp:
         @self.socketio.on('connect')
         def handle_connect():
             """Handle client connection"""
-            client_id = str(uuid.uuid4())
-            session['client_id'] = client_id
+            client_id = request.sid
             self.connected_clients[client_id] = {
                 'connected_at': datetime.now(),
                 'last_ping': datetime.now()
@@ -353,20 +725,25 @@ class DigitalTwinApp:
             
             # Send initial data to client
             emit('initial_data', self.get_cached_dashboard_data())
+            
+            # Automatically subscribe to essential updates
+            join_room('device_updates')
+            join_room('alerts')
+            join_room('system_metrics')
         
         @self.socketio.on('disconnect')
         def handle_disconnect():
             """Handle client disconnection"""
-            client_id = session.get('client_id')
-            if client_id and client_id in self.connected_clients:
+            client_id = request.sid
+            if client_id in self.connected_clients:
                 del self.connected_clients[client_id]
                 self.logger.info(f"Client {client_id} disconnected. Total clients: {len(self.connected_clients)}")
         
         @self.socketio.on('ping')
         def handle_ping():
             """Handle client ping"""
-            client_id = session.get('client_id')
-            if client_id and client_id in self.connected_clients:
+            client_id = request.sid
+            if client_id in self.connected_clients:
                 self.connected_clients[client_id]['last_ping'] = datetime.now()
                 emit('pong', {'timestamp': datetime.now().isoformat()})
         
@@ -374,7 +751,7 @@ class DigitalTwinApp:
         def handle_subscribe(data):
             """Handle subscription requests"""
             try:
-                client_id = session.get('client_id')
+                client_id = request.sid
                 subscription_type = data.get('type')
                 
                 if subscription_type == 'device_updates':
@@ -400,16 +777,26 @@ class DigitalTwinApp:
             """Background task to update data and send to clients"""
             while True:
                 try:
-                    # Update cached data
-                    self.update_data_cache()
+                    # Generate a new slice of real-time data
+                    new_devices_df = self.data_generator.generate_device_data(
+                        device_count=15, 
+                        days_of_data=0.003,  # ~5 minutes of data
+                        interval_minutes=1
+                    )
+                    
+                    # Get the latest record for each device to simulate a snapshot
+                    latest_devices_df = new_devices_df.loc[new_devices_df.groupby('device_id')['timestamp'].idxmax()]
+                    
+                    # Update cached data with the new snapshot
+                    self.update_data_cache(latest_devices_df)
                     
                     # Send updates to connected clients
                     if self.connected_clients:
                         dashboard_data = self.get_cached_dashboard_data()
                         self.socketio.emit('data_update', dashboard_data, room='device_updates')
                     
-                    # Check for new alerts
-                    self.check_and_send_alerts()
+                    # Check for new alerts based on the latest data
+                    self.check_and_send_alerts(latest_devices_df)
                     
                     eventlet.sleep(5)  # Update every 5 seconds
                     
@@ -448,206 +835,145 @@ class DigitalTwinApp:
     # Data retrieval methods
     def get_cached_dashboard_data(self):
         """Get cached dashboard data"""
-        if 'dashboard' not in self.data_cache or \
-           datetime.now() - self.data_cache.get('dashboard_updated', datetime.min) > timedelta(minutes=1):
-            self.data_cache['dashboard'] = self.fetch_dashboard_data()
-            self.data_cache['dashboard_updated'] = datetime.now()
+        if 'dashboard' not in self.data_cache:
+            # Generate initial data if cache is empty
+            initial_df = self.data_generator.generate_device_data(device_count=15, days_of_data=1)
+            latest_df = initial_df.loc[initial_df.groupby('device_id')['timestamp'].idxmax()]
+            self.update_data_cache(latest_df)
         
         return self.data_cache['dashboard']
-    
-    def fetch_dashboard_data(self):
-        """Fetch fresh dashboard data"""
+
+    def fetch_dashboard_data(self, devices_df):
+        """Fetch fresh dashboard data from a DataFrame"""
         try:
-            # Get latest device data
-            devices_data = self.get_latest_device_data()
-            
-            # Calculate key metrics
+            devices_data = devices_df.to_dict('records')
             total_devices = len(devices_data)
-            active_devices = len([d for d in devices_data if d.get('status') == 'normal'])
+            active_devices = len([d for d in devices_data if d.get('status') != 'offline'])
             
-            # Calculate average health score
             health_scores = [d.get('health_score', 0) for d in devices_data if d.get('health_score')]
             avg_health = np.mean(health_scores) * 100 if health_scores else 0
             
-            # Calculate average efficiency
             efficiency_scores = [d.get('efficiency_score', 0) for d in devices_data if d.get('efficiency_score')]
             avg_efficiency = np.mean(efficiency_scores) * 100 if efficiency_scores else 0
             
-            # Get energy usage
-            energy_usage = self.get_current_energy_usage()
-            
-            # Get performance data for charts
-            performance_data = self.get_performance_chart_data()
-            
-            # Get status distribution
+            energy_usage = sum(d.get('value', 0) for d in devices_data if d.get('device_type') == 'power_meter')
+
+            # Generate performance data for charts
+            performance_data = self.get_performance_chart_data(avg_health, avg_efficiency, energy_usage)
             status_distribution = self.calculate_status_distribution(devices_data)
             
             return {
                 'timestamp': datetime.now().isoformat(),
-                'system_health': avg_health,
-                'active_devices': active_devices,
-                'total_devices': total_devices,
-                'efficiency': avg_efficiency,
-                'energy_usage': energy_usage,
-                'performance_data': performance_data,
-                'status_distribution': status_distribution
+                'systemHealth': round(avg_health),
+                'activeDevices': active_devices,
+                'totalDevices': total_devices,
+                'efficiency': round(avg_efficiency),
+                'energyUsage': round(energy_usage) if energy_usage > 0 else round(np.random.uniform(800, 1500)),
+                'energyCost': round((energy_usage if energy_usage > 0 else np.random.uniform(800, 1500)) * 0.12),
+                'performanceData': performance_data,
+                'statusDistribution': status_distribution,
+                'devices': devices_data
             }
             
         except Exception as e:
             self.logger.error(f"Error fetching dashboard data: {e}")
-            return {
-                'timestamp': datetime.now().isoformat(),
-                'error': str(e)
-            }
-    
-    def get_latest_device_data(self):
-        """Get latest data for all devices"""
+            return {'error': str(e), 'timestamp': datetime.now().isoformat()}
+
+    def update_data_cache(self, devices_df):
+        """Update cached dashboard data"""
         try:
-            # Check if database is available
-            if not os.path.exists('DATABASE/health_data.db'):
-                return self.generate_sample_device_data()
-            
-            with sqlite3.connect('DATABASE/health_data.db') as conn:
-                query = """
-                    SELECT device_id, device_name, device_type, value, unit, status, 
-                           health_score, efficiency_score, location, timestamp
-                    FROM device_data 
-                    WHERE timestamp = (
-                        SELECT MAX(timestamp) 
-                        FROM device_data AS sub 
-                        WHERE sub.device_id = device_data.device_id
-                    )
-                    ORDER BY device_id
-                """
-                
-                df = pd.read_sql_query(query, conn)
-                return df.to_dict('records')
-                
+            self.data_cache['dashboard'] = self.fetch_dashboard_data(devices_df)
+            self.data_cache['dashboard_updated'] = datetime.now()
+            self.last_update = datetime.now()
         except Exception as e:
-            self.logger.error(f"Error getting device data: {e}")
-            return self.generate_sample_device_data()
-    
-    def generate_sample_device_data(self):
-        """Generate sample device data for demo purposes"""
-        devices = []
-        device_types = ['temperature_sensor', 'pressure_sensor', 'vibration_sensor', 'humidity_sensor']
-        locations = ['Factory Floor A', 'Factory Floor B', 'Warehouse', 'Quality Lab']
-        
-        for i in range(15):
-            device_type = np.random.choice(device_types)
-            status_prob = np.random.random()
-            
-            if status_prob > 0.1:
-                status = 'normal'
-                health_score = np.random.uniform(0.8, 1.0)
-            elif status_prob > 0.05:
-                status = 'warning'
-                health_score = np.random.uniform(0.5, 0.8)
-            else:
-                status = 'critical'
-                health_score = np.random.uniform(0.1, 0.5)
-            
-            devices.append({
-                'device_id': f'DEVICE_{i+1:03d}',
-                'device_name': f'{device_type.replace("_", " ").title()} {i+1:03d}',
-                'device_type': device_type,
-                'value': round(np.random.uniform(10, 100), 2),
-                'unit': self.get_unit_for_type(device_type),
-                'status': status,
-                'health_score': health_score,
-                'efficiency_score': np.random.uniform(0.7, 1.0),
-                'location': np.random.choice(locations),
-                'timestamp': datetime.now().isoformat()
-            })
-        
-        return devices
-    
-    def get_unit_for_type(self, device_type):
-        """Get appropriate unit for device type"""
-        units = {
-            'temperature_sensor': '°C',
-            'pressure_sensor': 'hPa',
-            'vibration_sensor': 'mm/s',
-            'humidity_sensor': '%RH',
-            'power_meter': 'W'
-        }
-        return units.get(device_type, 'units')
-    
-    def get_current_energy_usage(self):
-        """Get current energy usage"""
+            self.logger.error(f"Error updating data cache: {e}")
+
+    def check_and_send_alerts(self, devices_df):
+        """Check for new alerts using AlertManager and send to clients"""
         try:
-            # Try to get from database
-            with sqlite3.connect('DATABASE/health_data.db') as conn:
-                query = """
-                    SELECT power_consumption_kw 
-                    FROM energy_data 
-                    ORDER BY timestamp DESC 
-                    LIMIT 1
-                """
-                result = pd.read_sql_query(query, conn)
-                if not result.empty:
-                    return float(result.iloc[0]['power_consumption_kw'])
-        except:
-            pass
-        
-        # Return sample data if database not available
-        return round(np.random.uniform(800, 1500), 1)
+            # Iterate over the latest data for each device
+            for _, device_row in devices_df.iterrows():
+                device_data_dict = device_row.to_dict()
+                
+                # Use the alert manager to evaluate conditions
+                triggered_alerts = self.alert_manager.evaluate_conditions(
+                    data=device_data_dict,
+                    device_id=device_data_dict.get('device_id')
+                )
+                
+                # Emit any triggered alerts (limit to avoid spam)
+                for alert in triggered_alerts[:2]:  # Limit to 2 alerts per device per cycle
+                    self.socketio.emit('alert_update', alert, room='alerts')
+                    self.logger.info(f"New alert sent: {alert.get('description')} for device {alert.get('device_id')}")
+                    
+        except Exception as e:
+            self.logger.error(f"Error in check_and_send_alerts: {e}")
     
-    def get_performance_chart_data(self):
-        """Get data for performance charts"""
+    def get_performance_chart_data(self, system_health, efficiency, energy_usage):
+        """Generate data for performance charts based on current metrics"""
         try:
-            # Generate last 24 hours of data points
-            now = datetime.now()
-            timestamps = []
-            health_scores = []
-            efficiency_scores = []
+            # Generate 24 hours of historical performance data
+            chart_data = []
+            base_time = datetime.now() - timedelta(hours=23)
             
             for i in range(24):
-                timestamp = now - timedelta(hours=23-i)
-                timestamps.append(timestamp.strftime('%H:%M'))
+                timestamp = base_time + timedelta(hours=i)
                 
-                # Simulate daily patterns
-                hour_factor = np.sin(2 * np.pi * timestamp.hour / 24)
-                base_health = 85 + 10 * hour_factor + np.random.normal(0, 3)
-                base_efficiency = 78 + 12 * hour_factor + np.random.normal(0, 4)
+                # Add some realistic variation
+                hour_factor = math.sin(2 * math.pi * timestamp.hour / 24)
                 
-                health_scores.append(max(0, min(100, base_health)))
-                efficiency_scores.append(max(0, min(100, base_efficiency)))
+                health_variation = system_health + (10 * hour_factor) + random.gauss(0, 3)
+                efficiency_variation = efficiency + (8 * hour_factor) + random.gauss(0, 4)
+                energy_variation = energy_usage + (energy_usage * 0.2 * hour_factor) + random.gauss(0, energy_usage * 0.05)
+                
+                chart_data.append({
+                    'timestamp': timestamp.strftime('%H:%M'),
+                    'systemHealth': max(0, min(100, health_variation)),
+                    'efficiency': max(0, min(100, efficiency_variation)),
+                    'energyUsage': max(0, energy_variation)
+                })
             
-            return {
-                'labels': timestamps,
-                'health_scores': health_scores,
-                'efficiency_scores': efficiency_scores
-            }
+            return chart_data
             
         except Exception as e:
-            self.logger.error(f"Error getting performance chart data: {e}")
-            return {'labels': [], 'health_scores': [], 'efficiency_scores': []}
+            self.logger.error(f"Error generating performance chart data: {e}")
+            return []
     
     def calculate_status_distribution(self, devices_data):
         """Calculate device status distribution"""
-        status_counts = {'normal': 0, 'warning': 0, 'critical': 0}
-        
+        status_counts = {'normal': 0, 'warning': 0, 'critical': 0, 'offline': 0}
         for device in devices_data:
             status = device.get('status', 'normal')
             if status in status_counts:
                 status_counts[status] += 1
-            elif status == 'anomaly':
-                status_counts['critical'] += 1
-        
+            else:
+                # Map unknown statuses
+                if status == 'anomaly':
+                    status_counts['critical'] += 1
+                else:
+                    status_counts['normal'] += 1
         return status_counts
-    
+
     def get_devices_data(self):
         """Get detailed devices data"""
-        return self.get_latest_device_data()
+        try:
+            dashboard_data = self.get_cached_dashboard_data()
+            return dashboard_data.get('devices', [])
+        except Exception as e:
+            self.logger.error(f"Error getting devices data: {e}")
+            return []
     
     def get_device_data(self, device_id):
         """Get specific device data"""
-        devices = self.get_latest_device_data()
-        for device in devices:
-            if device.get('device_id') == device_id:
-                return device
-        return None
+        try:
+            devices = self.get_devices_data()
+            for device in devices:
+                if device.get('device_id') == device_id:
+                    return device
+            return None
+        except Exception as e:
+            self.logger.error(f"Error getting device data for {device_id}: {e}")
+            return None
     
     def get_analytics_data(self):
         """Get analytics data for charts"""
@@ -659,19 +985,19 @@ class DigitalTwinApp:
             analytics = {
                 'temperature': {
                     'labels': timestamps,
-                    'values': [20 + 5*np.sin(i*0.1) + np.random.normal(0, 1) for i in range(24)]
+                    'values': [20 + 5*math.sin(i*0.1) + random.gauss(0, 1) for i in range(24)]
                 },
                 'pressure': {
                     'labels': timestamps,
-                    'values': [1013 + 20*np.sin(i*0.05) + np.random.normal(0, 5) for i in range(24)]
+                    'values': [1013 + 20*math.sin(i*0.05) + random.gauss(0, 5) for i in range(24)]
                 },
                 'vibration': {
                     'labels': timestamps,
-                    'values': [0.2 + 0.1*np.sin(i*0.15) + np.random.exponential(0.05) for i in range(24)]
+                    'values': [0.2 + 0.1*math.sin(i*0.15) + abs(random.gauss(0, 0.05)) for i in range(24)]
                 },
                 'power': {
                     'labels': timestamps,
-                    'values': [1200 + 300*np.sin(i*0.08) + np.random.normal(0, 50) for i in range(24)]
+                    'values': [1200 + 300*math.sin(i*0.08) + random.gauss(0, 50) for i in range(24)]
                 }
             }
             
@@ -691,24 +1017,30 @@ class DigitalTwinApp:
                 ('Device offline', 'critical'),
                 ('Vibration levels high', 'warning'),
                 ('Maintenance required', 'info'),
-                ('System performance degraded', 'warning')
+                ('System performance degraded', 'warning'),
+                ('Low efficiency detected', 'warning'),
+                ('Sensor calibration needed', 'info')
             ]
             
             alerts = []
-            for i in range(min(limit, len(alert_types))):
+            for i in range(min(limit, len(alert_types) * 2)):
                 alert_type, alert_severity = alert_types[i % len(alert_types)]
                 
                 if severity and alert_severity != severity:
                     continue
                 
+                device_num = (i % 5) + 1
                 alerts.append({
                     'id': str(uuid.uuid4()),
                     'title': alert_type,
-                    'message': f'{alert_type} on device DEVICE_{(i%5)+1:03d}',
+                    'message': f'{alert_type} on device DEVICE_{device_num:03d}',
                     'severity': alert_severity,
-                    'device_id': f'DEVICE_{(i%5)+1:03d}',
+                    'device_id': f'DEVICE_{device_num:03d}',
                     'timestamp': (datetime.now() - timedelta(minutes=i*15)).isoformat()
                 })
+                
+                if len(alerts) >= limit:
+                    break
             
             return alerts
             
@@ -719,26 +1051,27 @@ class DigitalTwinApp:
     def get_system_metrics(self):
         """Get system performance metrics"""
         try:
-            import psutil
-            
-            return {
-                'timestamp': datetime.now().isoformat(),
-                'cpu_percent': psutil.cpu_percent(interval=1),
-                'memory_percent': psutil.virtual_memory().percent,
-                'disk_percent': psutil.disk_usage('/').percent,
-                'network_io': psutil.net_io_counters()._asdict(),
-                'active_connections': len(self.connected_clients)
-            }
-            
-        except ImportError:
-            # Fallback if psutil is not available
-            return {
-                'timestamp': datetime.now().isoformat(),
-                'cpu_percent': np.random.uniform(20, 80),
-                'memory_percent': np.random.uniform(40, 70),
-                'disk_percent': np.random.uniform(50, 85),
-                'active_connections': len(self.connected_clients)
-            }
+            try:
+                import psutil
+                
+                return {
+                    'timestamp': datetime.now().isoformat(),
+                    'cpu_percent': psutil.cpu_percent(interval=1),
+                    'memory_percent': psutil.virtual_memory().percent,
+                    'disk_percent': psutil.disk_usage('/').percent,
+                    'network_io': psutil.net_io_counters()._asdict(),
+                    'active_connections': len(self.connected_clients)
+                }
+                
+            except ImportError:
+                # Fallback if psutil is not available
+                return {
+                    'timestamp': datetime.now().isoformat(),
+                    'cpu_percent': random.uniform(20, 80),
+                    'memory_percent': random.uniform(40, 70),
+                    'disk_percent': random.uniform(50, 85),
+                    'active_connections': len(self.connected_clients)
+                }
         except Exception as e:
             self.logger.error(f"Error getting system metrics: {e}")
             return {}
@@ -756,7 +1089,7 @@ class DigitalTwinApp:
                 timestamps.append(timestamp.isoformat())
                 
                 # Generate realistic historical pattern
-                value = 50 + 20*np.sin(i*0.1) + np.random.normal(0, 5)
+                value = 50 + 20*math.sin(i*0.1) + random.gauss(0, 5)
                 values.append(round(value, 2))
             
             return {
@@ -784,7 +1117,7 @@ class DigitalTwinApp:
                 timestamps.append(timestamp.isoformat())
                 
                 # Generate prediction with decreasing confidence
-                pred = 50 + 15*np.sin(i*0.05) + np.random.normal(0, 2)
+                pred = 50 + 15*math.sin(i*0.05) + random.gauss(0, 2)
                 conf = max(0.5, 0.95 - (i * 0.02))  # Decreasing confidence
                 
                 predictions.append(round(pred, 2))
@@ -805,7 +1138,7 @@ class DigitalTwinApp:
     def calculate_health_scores(self):
         """Calculate health scores for all devices"""
         try:
-            devices = self.get_latest_device_data()
+            devices = self.get_devices_data()
             health_scores = {}
             
             for device in devices:
@@ -814,10 +1147,10 @@ class DigitalTwinApp:
                 health_scores[device_id] = {
                     'overall_health': health_score * 100,
                     'components': {
-                        'performance': np.random.uniform(0.7, 1.0) * 100,
-                        'reliability': np.random.uniform(0.8, 1.0) * 100,
+                        'performance': random.uniform(0.7, 1.0) * 100,
+                        'reliability': random.uniform(0.8, 1.0) * 100,
                         'efficiency': device.get('efficiency_score', 0.8) * 100,
-                        'maintenance': np.random.uniform(0.6, 0.9) * 100
+                        'maintenance': random.uniform(0.6, 0.9) * 100
                     }
                 }
             
@@ -873,6 +1206,13 @@ class DigitalTwinApp:
             end_date = datetime.now()
             start_date = end_date - timedelta(days=date_range)
             
+            # Generate historical data for export
+            export_devices_df = self.data_generator.generate_device_data(
+                device_count=15,
+                days_of_data=date_range,
+                interval_minutes=30  # 30-minute intervals for historical data
+            )
+            
             export_data = {
                 'metadata': {
                     'export_timestamp': datetime.now().isoformat(),
@@ -880,9 +1220,10 @@ class DigitalTwinApp:
                         'start': start_date.isoformat(),
                         'end': end_date.isoformat()
                     },
-                    'format': format_type
+                    'format': format_type,
+                    'total_records': len(export_devices_df)
                 },
-                'devices': self.get_latest_device_data(),
+                'devices': export_devices_df.to_dict('records'),
                 'alerts': self.get_alerts_data(limit=100),
                 'system_metrics': self.get_system_metrics()
             }
@@ -892,52 +1233,6 @@ class DigitalTwinApp:
         except Exception as e:
             self.logger.error(f"Error exporting data: {e}")
             return {'error': str(e)}
-    
-    def update_data_cache(self):
-        """Update cached data"""
-        try:
-            # Update dashboard data
-            self.data_cache['dashboard'] = self.fetch_dashboard_data()
-            self.data_cache['dashboard_updated'] = datetime.now()
-            
-            # Update other cached data
-            self.data_cache['devices'] = self.get_latest_device_data()
-            self.data_cache['devices_updated'] = datetime.now()
-            
-            self.last_update = datetime.now()
-            
-        except Exception as e:
-            self.logger.error(f"Error updating data cache: {e}")
-    
-    def check_and_send_alerts(self):
-        """Check for new alerts and send to clients"""
-        try:
-            # Simulate alert generation
-            if np.random.random() < 0.1:  # 10% chance of new alert
-                alert_types = [
-                    ('Temperature spike detected', 'warning'),
-                    ('Pressure anomaly', 'critical'),
-                    ('Vibration threshold exceeded', 'warning')
-                ]
-                
-                alert_type, severity = np.random.choice(alert_types)
-                device_id = f'DEVICE_{np.random.randint(1, 16):03d}'
-                
-                new_alert = {
-                    'id': str(uuid.uuid4()),
-                    'title': alert_type,
-                    'message': f'{alert_type} on {device_id}',
-                    'severity': severity,
-                    'device_id': device_id,
-                    'timestamp': datetime.now().isoformat()
-                }
-                
-                # Send to subscribed clients
-                self.socketio.emit('alert_update', new_alert, room='alerts')
-                self.logger.info(f"New alert sent: {alert_type} - {device_id}")
-                
-        except Exception as e:
-            self.logger.error(f"Error checking alerts: {e}")
     
     # Health check methods
     def check_database_health(self):
@@ -949,7 +1244,7 @@ class DigitalTwinApp:
                     conn.execute('SELECT 1').fetchone()
                 return {'status': 'healthy', 'path': db_path}
             else:
-                return {'status': 'warning', 'message': 'Database file not found, using sample data'}
+                return {'status': 'warning', 'message': 'Database file not found, using simulated data'}
         except Exception as e:
             return {'status': 'error', 'message': str(e)}
     
@@ -961,7 +1256,8 @@ class DigitalTwinApp:
             'health_calculator': self.health_calculator is not None,
             'alert_manager': self.alert_manager is not None,
             'pattern_analyzer': self.pattern_analyzer is not None,
-            'recommendation_engine': self.recommendation_engine is not None
+            'recommendation_engine': self.recommendation_engine is not None,
+            'data_generator': self.data_generator is not None
         }
         
         return {
@@ -1035,13 +1331,13 @@ if __name__ == '__main__':
         digital_twin_app = create_app()
         
         # Get configuration from environment
-        host = os.environ.get('HOST', '127.0.0.1')
+        host = os.environ.get('HOST', '0.0.0.0')
         port = int(os.environ.get('PORT', 5000))
-        debug = os.environ.get('FLASK_DEBUG', 'False').lower() == 'true'
+        debug = os.environ.get('FLASK_DEBUG', 'True').lower() == 'true'
         
         # Run application
         digital_twin_app.run(host=host, port=port, debug=debug)
         
     except Exception as e:
-        logging.error(f"Failed to start application: {e}")
+        logging.critical(f"Failed to start application: {e}", exc_info=True)
         sys.exit(1)

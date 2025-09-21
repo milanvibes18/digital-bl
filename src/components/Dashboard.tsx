@@ -1,131 +1,198 @@
-import { useState, useEffect } from 'react'
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from './ui/card'
-import { KPICard } from './KPICard'
-import { DeviceCard } from './DeviceCard'
-import { AlertCard } from './AlertCard'
-import { 
-  Activity, 
-  Cpu, 
-  Zap, 
-  TrendingUp, 
-  Wifi, 
+import { useState, useEffect } from 'react';
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from './ui/card';
+import { KPICard } from './KPICard';
+import { DeviceCard } from './DeviceCard';
+import { AlertCard } from './AlertCard';
+import {
+  Activity,
+  Cpu,
+  Zap,
+  TrendingUp,
+  Wifi,
   RefreshCw,
   Download,
   FileText,
-  Bell
-} from 'lucide-react'
-import { Device, Alert, DashboardData, TimeRange } from '../types/digital-twin'
-import { 
-  getDevices, 
-  getAlerts, 
-  generateSampleData, 
+  Bell,
+} from 'lucide-react';
+import { Device, Alert, DashboardData, TimeRange } from '../types/digital-twin';
+import {
+  getDevices,
+  getAlerts,
+  generateSampleData,
   initializeDatabase,
-  acknowledgeAlert
-} from '../utils/db'
-import { blink } from '../blink/client'
-import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts'
-import { cn } from '../utils/cn'
+  acknowledgeAlert,
+} from '../utils/db';
+import { blink } from '../blink/client';
+import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
+import { cn } from '../utils/cn';
+
+// Import a WebSocket client library if you don't have one
+import io from 'socket.io-client';
+
+// Define the socket connection
+const socket = io('http://localhost:5000'); // Adjust the URL to your backend
 
 export function Dashboard() {
-  const [devices, setDevices] = useState<Device[]>([])
-  const [alerts, setAlerts] = useState<Alert[]>([])
-  const [dashboardData, setDashboardData] = useState<DashboardData | null>(null)
-  const [timeRange, setTimeRange] = useState<TimeRange>('24h')
-  const [loading, setLoading] = useState(true)
-  const [userId] = useState('demo-user')
+  const [devices, setDevices] = useState<Device[]>([]);
+  const [alerts, setAlerts] = useState<Alert[]>([]);
+  const [dashboardData, setDashboardData] = useState<DashboardData | null>(null);
+  const [timeRange, setTimeRange] = useState<TimeRange>('24h');
+  const [loading, setLoading] = useState(true);
+  const [userId] = useState('demo-user');
 
   const timeRangeOptions: { label: string; value: TimeRange }[] = [
     { label: '1H', value: '1h' },
     { label: '4H', value: '4h' },
     { label: '24H', value: '24h' },
     { label: '7D', value: '7d' },
-    { label: '30D', value: '30d' }
-  ]
+    { label: '30D', value: '30d' },
+  ];
 
   useEffect(() => {
-    initializeApp()
-  }, [])
+    initializeApp();
+
+    // Listen for real-time data updates
+    socket.on('data_update', (data: DashboardData) => {
+      setDashboardData(data);
+      // You might need to update devices and alerts as well if they are part of the payload
+    });
+
+    // Listen for new alerts
+    socket.on('alert_update', (newAlert: Alert) => {
+      setAlerts((prevAlerts) => [newAlert, ...prevAlerts]);
+    });
+
+    // Clean up the socket connection when the component unmounts
+    return () => {
+      socket.off('data_update');
+      socket.off('alert_update');
+    };
+  }, []);
 
   const initializeApp = async () => {
     try {
-      setLoading(true)
-      await initializeDatabase()
-      
-      // Check if we have any devices, if not generate sample data
-      const existingDevices = await getDevices(userId)
+      setLoading(true);
+      await initializeDatabase();
+
+      const existingDevices = await getDevices(userId);
       if (existingDevices.length === 0) {
-        await generateSampleData(userId)
+        await generateSampleData(userId);
       }
-      
-      await loadData()
+
+      await loadData();
     } catch (error) {
-      console.error('Error initializing app:', error)
+      console.error('Error initializing app:', error);
     } finally {
-      setLoading(false)
+      setLoading(false);
     }
-  }
+  };
 
   const loadData = async () => {
     try {
       const [devicesData, alertsData] = await Promise.all([
         getDevices(userId),
-        getAlerts(userId, 10)
-      ])
-      
-      setDevices(devicesData)
-      setAlerts(alertsData)
-      
-      // Calculate dashboard metrics
-      const totalDevices = devicesData.length
-      const activeDevices = devicesData.filter(d => d.status !== 'offline').length
-      const systemHealth = devicesData.reduce((avg, device) => avg + device.healthScore, 0) / totalDevices * 100
-      const efficiency = devicesData.reduce((avg, device) => avg + device.efficiencyScore, 0) / totalDevices * 100
-      const energyUsage = devicesData
-        .filter(d => d.type === 'power_meter')
-        .reduce((sum, device) => sum + device.value, 0)
-      
-      // Generate sample performance data
-      const performanceData = Array.from({ length: 24 }, (_, i) => ({
-        timestamp: `${String(i).padStart(2, '0')}:00`,
-        systemHealth: systemHealth + Math.sin(i * 0.2) * 10 + Math.random() * 5,
-        efficiency: efficiency + Math.cos(i * 0.15) * 8 + Math.random() * 4,
-        energyUsage: energyUsage + Math.sin(i * 0.1) * energyUsage * 0.2
-      }))
-      
-      setDashboardData({
-        systemHealth: Math.round(systemHealth),
-        activeDevices,
-        totalDevices,
-        efficiency: Math.round(efficiency),
-        energyUsage: Math.round(energyUsage),
-        energyCost: Math.round(energyUsage * 0.12), // $0.12 per kWh
-        performanceData,
-        statusDistribution: {
-          normal: devicesData.filter(d => d.status === 'normal').length,
-          warning: devicesData.filter(d => d.status === 'warning').length,
-          critical: devicesData.filter(d => d.status === 'critical').length,
-          offline: devicesData.filter(d => d.status === 'offline').length
-        }
-      })
+        getAlerts(userId, 10),
+      ]);
+
+      setDevices(devicesData);
+      setAlerts(alertsData);
+
+      // This part will now be handled by the WebSocket `data_update` event
+      // but we can keep it for the initial load.
+      updateDashboardMetrics(devicesData);
+
     } catch (error) {
-      console.error('Error loading data:', error)
+      console.error('Error loading data:', error);
     }
+  };
+
+  const updateDashboardMetrics = (devicesData: Device[]) => {
+    const totalDevices = devicesData.length;
+    const activeDevices = devicesData.filter((d) => d.status !== 'offline').length;
+    const systemHealth =
+      devicesData.reduce((avg, device) => avg + device.healthScore, 0) /
+      totalDevices *
+      100;
+    const efficiency =
+      devicesData.reduce((avg, device) => avg + device.efficiencyScore, 0) /
+      totalDevices *
+      100;
+    const energyUsage = devicesData
+      .filter((d) => d.type === 'power_meter')
+      .reduce((sum, device) => sum + device.value, 0);
+
+    const performanceData = Array.from({ length: 24 }, (_, i) => ({
+      timestamp: `${String(i).padStart(2, '0')}:00`,
+      systemHealth: systemHealth + Math.sin(i * 0.2) * 10 + Math.random() * 5,
+      efficiency: efficiency + Math.cos(i * 0.15) * 8 + Math.random() * 4,
+      energyUsage: energyUsage + Math.sin(i * 0.1) * energyUsage * 0.2,
+    }));
+
+    setDashboardData({
+      systemHealth: Math.round(systemHealth),
+      activeDevices,
+      totalDevices,
+      efficiency: Math.round(efficiency),
+      energyUsage: Math.round(energyUsage),
+      energyCost: Math.round(energyUsage * 0.12),
+      performanceData,
+      statusDistribution: {
+        normal: devicesData.filter((d) => d.status === 'normal').length,
+        warning: devicesData.filter((d) => d.status === 'warning').length,
+        critical: devicesData.filter((d) => d.status === 'critical').length,
+        offline: devicesData.filter((d) => d.status === 'offline').length,
+      },
+    });
   }
 
   const handleRefresh = () => {
-    loadData()
-  }
+    setLoading(true);
+    loadData().finally(() => setLoading(false));
+  };
 
   const handleAcknowledgeAlert = async (alertId: string) => {
     try {
-      await acknowledgeAlert(alertId)
-      setAlerts(alerts.map(alert => 
-        alert.id === alertId ? { ...alert, acknowledged: true } : alert
-      ))
+      await acknowledgeAlert(alertId);
+      setAlerts(
+        alerts.map((alert) =>
+          alert.id === alertId ? { ...alert, acknowledged: true } : alert
+        )
+      );
     } catch (error) {
-      console.error('Error acknowledging alert:', error)
+      console.error('Error acknowledging alert:', error);
     }
-  }
+  };
+
+  const handleGenerateReport = async () => {
+    try {
+      const response = await fetch('/api/generate_report');
+      if (response.ok) {
+        const data = await response.json();
+        // You can open the report in a new tab or trigger a download
+        window.open(data.report_path, '_blank');
+      } else {
+        console.error('Failed to generate report');
+      }
+    } catch (error) {
+      console.error('Error generating report:', error);
+    }
+  };
+
+  const handleExportData = async () => {
+    try {
+      const response = await fetch('/api/export_data?format=csv');
+      if (response.ok) {
+        const data = await response.json();
+        // Trigger a download of the exported data
+        window.location.href = data.export_path;
+      } else {
+        console.error('Failed to export data');
+      }
+    } catch (error) {
+      console.error('Error exporting data:', error);
+    }
+  };
+
 
   if (loading) {
     return (
@@ -135,7 +202,7 @@ export function Dashboard() {
           <span>Loading Dashboard...</span>
         </div>
       </div>
-    )
+    );
   }
 
   return (
@@ -153,13 +220,13 @@ export function Dashboard() {
                 Real-time Industrial IoT Monitoring & Analytics
               </p>
             </div>
-            
+
             <div className="flex items-center gap-4">
               <div className="flex items-center gap-1">
                 <Wifi className="h-4 w-4 text-green-500" />
                 <span className="text-sm text-muted-foreground">Connected</span>
               </div>
-              
+
               <div className="flex items-center gap-2">
                 <button
                   onClick={handleRefresh}
@@ -168,13 +235,19 @@ export function Dashboard() {
                   <RefreshCw className="h-4 w-4" />
                   Refresh
                 </button>
-                
-                <button className="px-3 py-2 bg-secondary text-secondary-foreground rounded-md hover:bg-secondary/80 transition-colors flex items-center gap-2">
+
+                <button
+                  onClick={handleExportData}
+                  className="px-3 py-2 bg-secondary text-secondary-foreground rounded-md hover:bg-secondary/80 transition-colors flex items-center gap-2"
+                >
                   <Download className="h-4 w-4" />
                   Export
                 </button>
-                
-                <button className="px-3 py-2 bg-primary text-primary-foreground rounded-md hover:bg-primary/80 transition-colors flex items-center gap-2">
+
+                <button
+                  onClick={handleGenerateReport}
+                  className="px-3 py-2 bg-primary text-primary-foreground rounded-md hover:bg-primary/80 transition-colors flex items-center gap-2"
+                >
                   <FileText className="h-4 w-4" />
                   Report
                 </button>
@@ -188,15 +261,15 @@ export function Dashboard() {
         {/* Time Range Selector */}
         <div className="mb-8">
           <div className="flex items-center gap-2">
-            {timeRangeOptions.map(option => (
+            {timeRangeOptions.map((option) => (
               <button
                 key={option.value}
                 onClick={() => setTimeRange(option.value)}
                 className={cn(
-                  "px-3 py-1 rounded-md text-sm font-medium transition-colors",
-                  timeRange === option.value 
-                    ? "bg-primary text-primary-foreground" 
-                    : "bg-secondary text-secondary-foreground hover:bg-secondary/80"
+                  'px-3 py-1 rounded-md text-sm font-medium transition-colors',
+                  timeRange === option.value
+                    ? 'bg-primary text-primary-foreground'
+                    : 'bg-secondary text-secondary-foreground hover:bg-secondary/80'
                 )}
               >
                 {option.label}
@@ -212,36 +285,38 @@ export function Dashboard() {
             value={`${dashboardData?.systemHealth || 0}%`}
             icon={Activity}
             variant="success"
-            trend={{ value: "+2.1%", direction: "up" }}
+            trend={{ value: '+2.1%', direction: 'up' }}
             loading={!dashboardData}
           />
-          
+
           <KPICard
             title="Active Devices"
-            value={`${dashboardData?.activeDevices || 0}/${dashboardData?.totalDevices || 0}`}
+            value={`${dashboardData?.activeDevices || 0}/${
+              dashboardData?.totalDevices || 0
+            }`}
             subtitle={`${dashboardData?.statusDistribution.offline || 0} offline`}
             icon={Cpu}
             variant="default"
             loading={!dashboardData}
           />
-          
+
           <KPICard
             title="Energy Usage"
             value={`${dashboardData?.energyUsage || 0} kW`}
             subtitle={`$${dashboardData?.energyCost || 0}/hour`}
             icon={Zap}
             variant="warning"
-            trend={{ value: "-0.8%", direction: "down" }}
+            trend={{ value: '-0.8%', direction: 'down' }}
             loading={!dashboardData}
           />
-          
+
           <KPICard
             title="Efficiency"
             value={`${dashboardData?.efficiency || 0}%`}
             subtitle="Predicted 24h"
             icon={TrendingUp}
             variant="info"
-            trend={{ value: "+1.2%", direction: "up" }}
+            trend={{ value: '+1.2%', direction: 'up' }}
             loading={!dashboardData}
           />
         </div>
@@ -252,34 +327,42 @@ export function Dashboard() {
             <Card>
               <CardHeader>
                 <CardTitle>Performance Metrics</CardTitle>
-                <CardDescription>Real-time system performance over time</CardDescription>
+                <CardDescription>
+                  Real-time system performance over time
+                </CardDescription>
               </CardHeader>
               <CardContent>
                 <div className="h-[400px]">
                   <ResponsiveContainer width="100%" height="100%">
                     <LineChart data={dashboardData?.performanceData || []}>
-                      <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" />
-                      <XAxis dataKey="timestamp" stroke="hsl(var(--muted-foreground))" />
-                      <YAxis stroke="hsl(var(--muted-foreground))" />
-                      <Tooltip 
-                        contentStyle={{ 
-                          backgroundColor: 'hsl(var(--card))', 
-                          border: '1px solid hsl(var(--border))',
-                          borderRadius: '8px'
-                        }} 
+                      <CartesianGrid
+                        strokeDasharray="3 3"
+                        stroke="hsl(var(--border))"
                       />
-                      <Line 
-                        type="monotone" 
-                        dataKey="systemHealth" 
-                        stroke="hsl(var(--success))" 
+                      <XAxis
+                        dataKey="timestamp"
+                        stroke="hsl(var(--muted-foreground))"
+                      />
+                      <YAxis stroke="hsl(var(--muted-foreground))" />
+                      <Tooltip
+                        contentStyle={{
+                          backgroundColor: 'hsl(var(--card))',
+                          border: '1px solid hsl(var(--border))',
+                          borderRadius: '8px',
+                        }}
+                      />
+                      <Line
+                        type="monotone"
+                        dataKey="systemHealth"
+                        stroke="hsl(var(--success))"
                         strokeWidth={2}
                         dot={false}
                         name="System Health %"
                       />
-                      <Line 
-                        type="monotone" 
-                        dataKey="efficiency" 
-                        stroke="hsl(var(--primary))" 
+                      <Line
+                        type="monotone"
+                        dataKey="efficiency"
+                        stroke="hsl(var(--primary))"
                         strokeWidth={2}
                         dot={false}
                         name="Efficiency %"
@@ -299,20 +382,28 @@ export function Dashboard() {
                   <Bell className="h-5 w-5" />
                   Critical Alerts
                   <span className="ml-auto bg-red-500 text-white text-xs px-2 py-1 rounded-full">
-                    {alerts.filter(a => a.severity === 'critical' && !a.acknowledged).length}
+                    {
+                      alerts.filter(
+                        (a) => a.severity === 'critical' && !a.acknowledged
+                      ).length
+                    }
                   </span>
                 </CardTitle>
                 <CardDescription>Requires immediate attention</CardDescription>
               </CardHeader>
               <CardContent className="space-y-4">
-                {alerts.filter(a => a.severity === 'critical').slice(0, 3).map(alert => (
-                  <AlertCard
-                    key={alert.id}
-                    alert={alert}
-                    onAcknowledge={() => handleAcknowledgeAlert(alert.id)}
-                  />
-                ))}
-                {alerts.filter(a => a.severity === 'critical').length === 0 && (
+                {alerts
+                  .filter((a) => a.severity === 'critical')
+                  .slice(0, 3)
+                  .map((alert) => (
+                    <AlertCard
+                      key={alert.id}
+                      alert={alert}
+                      onAcknowledge={() => handleAcknowledgeAlert(alert.id)}
+                    />
+                  ))}
+                {alerts.filter((a) => a.severity === 'critical').length ===
+                  0 && (
                   <p className="text-muted-foreground text-center py-8">
                     No critical alerts
                   </p>
@@ -327,11 +418,13 @@ export function Dashboard() {
           <Card>
             <CardHeader>
               <CardTitle>Device Status</CardTitle>
-              <CardDescription>Real-time monitoring of all connected devices</CardDescription>
+              <CardDescription>
+                Real-time monitoring of all connected devices
+              </CardDescription>
             </CardHeader>
             <CardContent>
               <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4 gap-4">
-                {devices.map(device => (
+                {devices.map((device) => (
                   <DeviceCard
                     key={device.id}
                     device={device}
@@ -344,5 +437,5 @@ export function Dashboard() {
         </div>
       </div>
     </div>
-  )
+  );
 }
